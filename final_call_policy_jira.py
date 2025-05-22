@@ -25,7 +25,7 @@ app = Flask(__name__)
 load_dotenv()  # Load từ .env
 print("🔐 Token =", os.getenv("VAULT_TOKEN"))
 
-SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL")
+SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK")
 VAULT_ADDR = os.getenv("VAULT_ADDR")
 VAULT_TOKEN = os.getenv("VAULT_TOKEN")
 KEY_PATH= ["api_jira" , "api_fortigate"]
@@ -69,7 +69,7 @@ for path, var_name in PATH_MAPPING.items():
 
 
 # Cấu hình FortiGate
-FORTI_URL = os.getenv("FORTI_ADDR")
+FORTI_URL = os.getenv("FORTI_URL")
 VERIFY_SSL = False  # đổi thành True nếu FortiGate có chứng chỉ hợp lệ
 print(FORTI_URL)
 # Cấu hình Jira    
@@ -82,13 +82,14 @@ print(JIRA_BASE_URL)
 def ensure_address_exists(ip, headers):
     addr_name = ip
     encode_ip = quote(ip, safe="")
+    print(f"{FORTI_URL}/api/v2/cmdb/firewall/address/{encode_ip}, headers={headers}, verify={VERIFY_SSL}")
     resp = requests.get(
         f"{FORTI_URL}/api/v2/cmdb/firewall/address/{encode_ip}",
         headers=headers,
         verify=VERIFY_SSL
     )
-
-    if resp.status_code == 404:
+    print(resp.status_code)
+    if 400 <= resp.status_code < 500:
         # Chưa tồn tại -> tạo mới
         print(f"{addr_name} chua ton tai can phai tao moi")
         data = {
@@ -99,9 +100,12 @@ def ensure_address_exists(ip, headers):
         # Thêm trường interface dựa trên điều kiện IP
         if ip.startswith("192.168.106."):
             data["associated-interface"] = "User"
+            print(data)
         elif ip.startswith("10."):
             data["associated-interface"] = "VPN_ANM"
+            print(data)
         data_json = json.dumps(data)
+        print(f"{FORTI_URL}/api/v2/cmdb/firewall/address,headers={headers},data={data_json}, verify={VERIFY_SSL}")
         create_resp = requests.post(
             f"{FORTI_URL}/api/v2/cmdb/firewall/address",
             headers=headers,
@@ -121,7 +125,6 @@ def ensure_address_exists(ip, headers):
         elif not create_resp.ok:
             message = f"Failed to create address {addr_name}: {create_resp.text}"
             send_to_slack(message)
-            raise Exception(f"Failed to create address {ip}: {create_resp.text}")
 
     elif resp.status_code == 200:
         try:
@@ -197,9 +200,10 @@ def ensure_service_exists(port, protocol, headers):
     url = f"{FORTI_URL}/api/v2/cmdb/firewall.service/custom/{service_name}"
     print("[ensure_service_exists][url]", url)
     #check xem service da ton tai chua
+    print(headers)
     resp = requests.get(url, headers, verify = VERIFY_SSL)
     print("[ensure_service_exists][GET]", service_name)
-    if resp.status_code == 404:
+    if 400 <= resp.status_code < 500:
         respCreateService = create_service(service_name, protocol, headers,  port)
         if not respCreateService:
             return "NA"
@@ -228,7 +232,11 @@ def create_service(service_name,protocol, headers, port):
         verify=VERIFY_SSL
     )
     print("[create_service][create_resp]", create_resp)
-    if create_resp.status_code != 200 or create_resp.status_code != 201:
+    print(create_resp.status_code)
+    print(create_resp.status_code != 200)
+    print(create_resp.status_code != int(200))
+
+    if (create_resp.status_code != 200) and (create_resp.status_code != 201):
         print("Err create service",service_name , create_resp)
         message = f"Failed to create service {service_name}: {create_resp.text}"
         send_to_slack(message)
@@ -312,8 +320,8 @@ def create_firewall_rule_internal(data):
         rule["service"] = parse_ports(data, headers)
         print(rule["service"])
         rule_json = json.dumps(rule)
-        ensure_address_exists(data("source_ip"), headers)
-        ensure_address_exists(data("dest_ip"), headers)
+        ensure_address_exists(data.get("source_ip"), headers)
+        ensure_address_exists(data.get("dest_ip"), headers)
         resp = requests.post(
             f"{FORTI_URL}/api/v2/cmdb/firewall/policy",
             headers=headers,
@@ -344,20 +352,19 @@ def send_to_slack(message):
         return
 
     payload = {
-                "DevSecOps": {
-                    "username": "Jira Automation",
-                    "icon_emoji": ":ghost:",
-                    "channel": "#Jira_ticket",
-                    "attachments": [
+                "DevSecOps": "#Jira_ticket",
+                "username": "Jira_Automation",
+                "icon_emoji": ":ghost:",
+                "attachments": [
                         {
-                            "color": "#36a64f",
-                            "text": message
+                        "color": "#36a64f",
+                        "text": message
                         }
                     ]
                 }
-    }
+    payload_json = json.dumps(payload)
     try:
-        response = requests.post(SLACK_WEBHOOK, json=payload)
+        response = requests.post(SLACK_WEBHOOK, data=payload_json, headers={"ContentType": "application/json"}, verify=False)
         if response.status_code != 200:
             print(f"Failed to send message to Slack: {response.text}")
     except Exception as e:
