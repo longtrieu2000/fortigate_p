@@ -25,7 +25,7 @@ app = Flask(__name__)
 load_dotenv()  # Load từ .env
 print("🔐 Token =", os.getenv("VAULT_TOKEN"))
 
-
+SLACK_WEBHOOK = os.getenv("SLACK_WEBHOOK_URL")
 VAULT_ADDR = os.getenv("VAULT_ADDR")
 VAULT_TOKEN = os.getenv("VAULT_TOKEN")
 KEY_PATH= ["api_jira" , "api_fortigate"]
@@ -76,6 +76,9 @@ print(FORTI_URL)
 JIRA_BASE_URL = os.getenv("JIRA_BASE_URL")
 print(JIRA_BASE_URL)
 
+#hàm này là để check xem địa chỉ IP đã tồn tại trong FortiGate hay chưa
+# Nếu chưa tồn tại thì sẽ tạo mới
+# Nếu đã tồn tại thì sẽ không làm gì cả
 def ensure_address_exists(ip, headers):
     addr_name = ip
     encode_ip = quote(ip, safe="")
@@ -93,6 +96,11 @@ def ensure_address_exists(ip, headers):
             "subnet": ip,
             "type": "ipmask"
         }
+        # Thêm trường interface dựa trên điều kiện IP
+        if ip.startswith("192.168.106."):
+            data["associated-interface"] = "User"
+        elif ip.startswith("10."):
+            data["associated-interface"] = "VPN_ANM"
         data_json = json.dumps(data)
         create_resp = requests.post(
             f"{FORTI_URL}/api/v2/cmdb/firewall/address",
@@ -107,8 +115,12 @@ def ensure_address_exists(ip, headers):
             except ValueError:
                 print(" noi dung tra ve khong phai json, in doan text")
                 print(create_resp.text)
+            message = f"Address {addr_name} created successfully."
+            send_to_slack(message)
 
         elif not create_resp.ok:
+            message = f"Failed to create address {addr_name}: {create_resp.text}"
+            send_to_slack(message)
             raise Exception(f"Failed to create address {ip}: {create_resp.text}")
 
     elif resp.status_code == 200:
@@ -120,8 +132,13 @@ def ensure_address_exists(ip, headers):
             print(resp.text)
 
     elif not resp.ok:
+        message = f"Error checking address {addr_name}: {resp.text}"
+        send_to_slack(message)
         raise Exception(f"Error checking address {ip}: {resp.text}")
-    
+
+# Hàm này sẽ tạo rule firewall dựa trên dữ liệu từ Jira
+# Chú ý là hàm này sẽ không tạo rule nếu địa chỉ IP đã tồn tại trong FortiGate
+# Nếu địa chỉ IP đã tồn tại thì hàm này sẽ không làm gì cả  
 def build_firewall_rule(data):
     source_ip = data.get("source_ip", "")
     dest_ip = data.get("dest_ip", "")
@@ -134,7 +151,7 @@ def build_firewall_rule(data):
         srcintf_name = "port1"  # fallback nếu không khớp mẫu nào hoặc mở rông thêm 
 
 
-    return {
+    rule = {
         "name": f"JiraRule-{dest_ip}",
         "srcintf": [{"name": srcintf_name}],
         "dstintf": [{"name": "VPN_ANM"}],
@@ -146,7 +163,12 @@ def build_firewall_rule(data):
         "logtraffic": "no",
         "status": "enable"
     }
+    send_to_slack(f"Firewall rule built: {rule}")
+    return rule
 
+# Hàm này sẽ phân tích các cổng TCP và UDP từ dữ liệu và tạo dịch vụ tương ứng
+# Nếu dịch vụ đã tồn tại thì sẽ không tạo mới
+# Nếu dịch vụ chưa tồn tại thì sẽ tạo mới
 def parse_ports(data, headers):
     services = []
     tcp_ports = data.get("port_tcp", "").split(",")
@@ -163,8 +185,13 @@ def parse_ports(data, headers):
             servicename = ensure_service_exists(port, "udp", headers)
             services.append({"name": servicename})
     print("da chay xong ham [parse_ports]", services)
+    message = f"service tao rule la {services}"
+    send_to_slack(message)
     return services
 
+# Hàm này sẽ kiểm tra xem dịch vụ đã tồn tại trong FortiGate hay chưa
+# Nếu dịch vụ đã tồn tại thì sẽ không làm gì cả
+# Nếu dịch vụ chưa tồn tại thì sẽ tạo mới
 def ensure_service_exists(port, protocol, headers):
     service_name = f"{port}_{protocol.upper()}"
     url = f"{FORTI_URL}/api/v2/cmdb/firewall.service/custom/{service_name}"
@@ -180,6 +207,7 @@ def ensure_service_exists(port, protocol, headers):
         return "NA"
     return service_name
 
+# Hàm này sẽ tạo dịch vụ mới trong FortiGate
 def create_service(service_name,protocol, headers, port):
     data = {
             "name" : service_name,
@@ -202,11 +230,18 @@ def create_service(service_name,protocol, headers, port):
     print("[create_service][create_resp]", create_resp)
     if create_resp.status_code != 200 or create_resp.status_code != 201:
         print("Err create service",service_name , create_resp)
+        message = f"Failed to create service {service_name}: {create_resp.text}"
+        send_to_slack(message)
         return 0
     else:
         print("chay ham[create_service] thanh cong")
+        message = f"Service {service_name} created successfully."
+        send_to_slack(message)
     return 1
 
+# Hàm này sẽ lấy thông tin chi tiết key của issue từ Jira
+# Dữ liệu trả về sẽ là một danh sách chứa thông tin chi tiết của issue
+# Chú ý là hàm này sẽ không kiểm tra xem issue có tồn tại hay không
 def get_issue_details(issue_key):
     resp = requests.get(
         f"{JIRA_BASE_URL}/rest/proformalite/api/2/portal/1/issues/{issue_key}",
@@ -218,10 +253,15 @@ def get_issue_details(issue_key):
     
     if resp.status_code == 200:
         print(f"issue key cua jira la {issue_key}")
+        message = f"ma {issue_key} cua ticket jira"
+        send_to_slack(message)
         return resp.json()
     else:
         raise Exception(f"Jira API error: {resp.status_code} - {resp.text}")
 
+# Hàm này sẽ nhận dữ liệu từ Jira Automation
+# và gọi hàm tạo rule firewall
+# Dữ liệu sẽ được gửi dưới dạng JSON
 @app.route("/webhook/jira", methods=["POST"])
 def receive_from_automation():
     data = request.get_json()
@@ -256,7 +296,8 @@ def receive_from_automation():
     except Exception as e:
         return jsonify({"status": "error", "msg": str(e)}), 500
 
-
+# Hàm này sẽ tạo rule firewall trong FortiGate
+# Dữ liệu sẽ được gửi từ hàm receive_from_automation
 def create_firewall_rule_internal(data):                                                                                                                                                                                                                                                                                            
     try:
         rule = build_firewall_rule(data)
@@ -281,11 +322,35 @@ def create_firewall_rule_internal(data):
         )
 
         if resp.ok:
+            message = "Firewall rule created successfully."
+            send_to_slack(message)
             return jsonify({"status": "success", "msg": "Rule created successfully"}), 200
         else:
+            message = f"Failed to create firewall rule: {resp.text}"
+            send_to_slack(message)
             return jsonify({"status": "error", "msg": resp.text}), 400
     except Exception as e:
+        message = f"Error creating firewall rule: {str(e)}"
+        send_to_slack(message)
         return jsonify({"status": "error", "msg": str(e)}), 500
     
+# Hàm này sẽ gửi thông báo đến Slack
+# Bạn cần cấu hình webhook URL trong biến môi trường SLACK_WEBHOOK_URL
+# Bạn có thể sử dụng hàm này để gửi thông báo khi tạo rule thành công hoặc thất bại
+def send_to_slack(message):
+    #slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL")  # Đảm bảo URL webhook của Slack được lưu trong biến môi trường
+    if not slack_webhook_url:
+        print("SLACK_WEBHOOK_URL is not set.")
+        return
+
+    payload = {"text": message}
+    try:
+        response = requests.post(slack_webhook_url, json=payload)
+        if response.status_code != 200:
+            print(f"Failed to send message to Slack: {response.text}")
+    except Exception as e:
+        print(f"Error sending message to Slack: {str(e)}")
+
+# Hàm này sẽ chạy Flask app 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8101)
