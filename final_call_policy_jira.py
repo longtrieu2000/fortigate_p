@@ -339,13 +339,25 @@ def create_firewall_rule_internal(data):
 # Bạn có thể sử dụng hàm này để gửi thông báo khi tạo rule thành công hoặc thất bại
 def send_to_slack(message):
     #slack_webhook_url = os.getenv("SLACK_WEBHOOK_URL")  # Đảm bảo URL webhook của Slack được lưu trong biến môi trường
-    if not slack_webhook_url:
+    if not SLACK_WEBHOOK:
         print("SLACK_WEBHOOK_URL is not set.")
         return
 
-    payload = {"text": message}
+    payload = {
+                "DevSecOps": {
+                    "username": "Jira Automation",
+                    "icon_emoji": ":ghost:",
+                    "channel": "#Jira_ticket",
+                    "attachments": [
+                        {
+                            "color": "#36a64f",
+                            "text": message
+                        }
+                    ]
+                }
+    }
     try:
-        response = requests.post(slack_webhook_url, json=payload)
+        response = requests.post(SLACK_WEBHOOK, json=payload)
         if response.status_code != 200:
             print(f"Failed to send message to Slack: {response.text}")
     except Exception as e:

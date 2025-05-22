@@ -13,6 +13,9 @@ with open(".env.enc", "rb") as f:
 
 decrypted = fernet.decrypt(encrypted).decode()
 
+#with open(".env_dec", "w", encoding="utf-8") as f:
+#    f.write(decrypted)
+
 # Nạp vào biến môi trường
 for line in decrypted.splitlines():
     if "=" in line:
@@ -20,4 +23,4 @@ for line in decrypted.splitlines():
         os.environ[k] = v
 
 # Kiểm tra
-print("🔑 VAULT_TOKEN =", os.environ.get("VAULT_TOKEN"))
+#print("🔑 VAULT_TOKEN =", os.environ.get("VAULT_TOKEN"))
