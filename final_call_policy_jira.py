@@ -288,11 +288,13 @@ def receive_from_automation():
         print("-------------------------------")
         payload_fw = {
                 "source_ip" : issue["state"]["answers"]["13"]["text"],
-                "dest_ip" : issue["state"]["answers"]["14"]["text"],
+                "dest_ip" : issue["state"]["answers"]["72"]["text"],
                 "port_tcp" : issue.get("state").get("answers").get("15", {}).get("text"),
                 "port_udp" : issue.get("state").get("answers").get("18", {}).get("text"),
-                #"purpose" : issue.get["state"]["answers"]["12"]["text"]
-            }
+        }   
+        user_create = issue.get("state").get("answers").get("71", {}).get("text")
+        message = f"nguoi tao ticket la {user_create}, bat dau tao rule"
+        send_to_slack(message)
         print(payload_fw)
         print("---------------------")
         if payload_fw["port_udp"] == None:
